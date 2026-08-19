@@ -168,7 +168,8 @@ try {
         FOREIGN KEY (rfq_id) REFERENCES rfqs(id) ON DELETE CASCADE,
         FOREIGN KEY (rfq_item_id) REFERENCES rfq_items(id) ON DELETE CASCADE,
         FOREIGN KEY (quotation_id) REFERENCES quotations(id) ON DELETE CASCADE,
-        FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE CASCADE
+        FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE CASCADE,
+        UNIQUE KEY uniq_award_item (rfq_id, rfq_item_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
     echo "✓ Created rfq_awards table\n";
 
