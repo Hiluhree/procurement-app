@@ -1,0 +1,4 @@
+# Uploaded signature/stamp images only — never execute scripts from this folder.
+<FilesMatch "\.(php|phtml|php\d)$">
+  Require all denied
+</FilesMatch>
