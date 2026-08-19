@@ -62,11 +62,20 @@ $quotations_stmt = $pdo->prepare('
 $quotations_stmt->execute([$rfq_id]);
 $quotations = $quotations_stmt->fetchAll();
 
+$submitted_quotations = array_values(array_filter($quotations, function($q) {
+    return $q['status'] === 'submitted';
+}));
+
+$active_quotations = array_values(array_filter($quotations, function($q) {
+    return $q['status'] !== 'rejected';
+}));
+
 // Get existing awards
 $awards_stmt = $pdo->prepare('
-    SELECT ra.*, s.name as supplier_name
+    SELECT ra.*, s.name as supplier_name, ri.description, ri.unit
     FROM rfq_awards ra
     JOIN suppliers s ON s.id = ra.supplier_id
+    JOIN rfq_items ri ON ri.id = ra.rfq_item_id
     WHERE ra.rfq_id = ?
     ORDER BY ra.rfq_item_id ASC
 ');
@@ -80,7 +89,7 @@ $item_quotes_stmt = $pdo->prepare('
     FROM quotation_items qi
     JOIN quotations q ON q.id = qi.quotation_id
     JOIN suppliers s ON s.id = q.supplier_id
-    WHERE q.rfq_id = ? AND q.status = "submitted"
+    WHERE q.rfq_id = ? AND q.status != "rejected"
     ORDER BY qi.rfq_item_id ASC, qi.unit_price ASC
 ');
 $item_quotes_stmt->execute([$rfq_id]);
@@ -221,7 +230,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                         $pdo->rollBack();
                         $errors[] = 'This item has already been awarded.';
                     } else {
-                        $pdo->prepare('UPDATE quotations SET status = "awarded" WHERE id = ?')->execute([$quotation_id]);
                         $pdo->prepare('UPDATE rfqs SET status = "evaluating" WHERE id = ? AND status = "issued"')->execute([$rfq_id]);
                         $pdo->prepare('INSERT INTO rfq_awards (rfq_id, rfq_item_id, quotation_id, supplier_id, qty_awarded, unit_price) VALUES (?,?,?,?,?,?)')->execute([$rfq_id, $item_id, $quotation_id, $supplier_id, $qty, $unit_price]);
                         $pdo->commit();
@@ -232,6 +240,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     $pdo->rollBack();
                     $errors[] = 'Error awarding item: ' . $e->getMessage();
                 }
+            }
+        }
+    } elseif ($_POST['action'] === 'undo_award') {
+        if ($rfq['status'] === 'awarded') {
+            $errors[] = 'Cannot undo awards after LPOs have been generated.';
+        } else {
+            $undo_item_id = (int)($_POST['rfq_item_id'] ?? 0);
+            if (!$undo_item_id) {
+                $errors[] = 'Invalid item.';
+            } else {
+                try {
+                    $pdo->beginTransaction();
+                    $pdo->prepare('DELETE FROM rfq_awards WHERE rfq_id = ? AND rfq_item_id = ?')->execute([$rfq_id, $undo_item_id]);
+                    $remaining_stmt = $pdo->prepare('SELECT COUNT(*) as cnt FROM rfq_awards WHERE rfq_id = ?');
+                    $remaining_stmt->execute([$rfq_id]);
+                    $remaining = $remaining_stmt->fetch();
+                    if (!$remaining || $remaining['cnt'] == 0) {
+                        $pdo->prepare('UPDATE rfqs SET status = "issued" WHERE id = ? AND status = "evaluating"')->execute([$rfq_id]);
+                    }
+                    $pdo->commit();
+                    flash('Award undone. You can now re-evaluate this item.', 'success');
+                    redirect('/rfq_view.php?id=' . $rfq_id);
+                } catch (PDOException $e) {
+                    $pdo->rollBack();
+                    $errors[] = 'Error undoing award: ' . $e->getMessage();
+                }
+            }
+        }
+    } elseif ($_POST['action'] === 'reset_evaluation') {
+        if ($rfq['status'] === 'awarded') {
+            $errors[] = 'Cannot reset evaluation after LPOs have been generated.';
+        } else {
+            try {
+                $pdo->beginTransaction();
+                $pdo->prepare('DELETE FROM rfq_awards WHERE rfq_id = ?')->execute([$rfq_id]);
+                $pdo->prepare('UPDATE rfqs SET status = "issued" WHERE id = ? AND status = "evaluating"')->execute([$rfq_id]);
+                $pdo->commit();
+                flash('All awards have been reset. You can now start fresh evaluation.', 'success');
+                redirect('/rfq_view.php?id=' . $rfq_id);
+            } catch (PDOException $e) {
+                $pdo->rollBack();
+                $errors[] = 'Error resetting evaluation: ' . $e->getMessage();
             }
         }
     } elseif ($_POST['action'] === 'generate_lpos') {
@@ -318,7 +368,7 @@ require __DIR__ . '/includes/header.php';
         <button type="submit" class="btn">Send Invitations</button>
       </form>
     <?php endif; ?>
-    <?php if (($rfq['status'] === 'issued' || $rfq['status'] === 'evaluating') && !empty($quotations)): ?>
+    <?php if (($rfq['status'] === 'issued' || $rfq['status'] === 'evaluating') && (!empty($active_quotations) || $awarded_count > 0)): ?>
       <a href="#evaluation" class="btn gold" onclick="switchTab('evaluation')">Evaluate & Award Items</a>
     <?php endif; ?>
     <a href="<?= BASE_PATH ?>/rfqs.php" class="btn">Back</a>
@@ -338,7 +388,7 @@ require __DIR__ . '/includes/header.php';
   <button class="tab-button active" onclick="switchTab('overview')">Overview</button>
   <button class="tab-button" onclick="switchTab('suppliers')">Suppliers (<?= count($invited_suppliers) ?>)</button>
   <button class="tab-button" onclick="switchTab('quotations')">Quotations (<?= count($quotations) ?>)</button>
-  <?php if (!empty($quotations) && ($rfq['status'] === 'issued' || $rfq['status'] === 'evaluating')): ?>
+  <?php if ((!empty($active_quotations) || $awarded_count > 0) && ($rfq['status'] === 'issued' || $rfq['status'] === 'evaluating')): ?>
     <button class="tab-button" onclick="switchTab('evaluation')">Evaluate (<?= $awarded_count ?>/<?= count($rfq_items) ?>)</button>
   <?php endif; ?>
 </div>
@@ -554,7 +604,7 @@ require __DIR__ . '/includes/header.php';
 </div>
 
 <!-- Evaluation Tab -->
-<?php if (!empty($quotations) && ($rfq['status'] === 'issued' || $rfq['status'] === 'evaluating')): ?>
+<?php if ((!empty($active_quotations) || $awarded_count > 0) && ($rfq['status'] === 'issued' || $rfq['status'] === 'evaluating')): ?>
 <div id="evaluation" class="tab-content">
   <div class="card">
     <div class="card-header"><span class="htitle">Item-by-Item Evaluation</span></div>
@@ -565,7 +615,7 @@ require __DIR__ . '/includes/header.php';
             <th>Item</th>
             <th>Unit</th>
             <th style="text-align:right;">RFQ Qty</th>
-            <?php foreach ($quotations as $q): ?>
+            <?php foreach ($active_quotations as $q): ?>
               <th style="text-align:right;"><?= e($q['supplier_name']) ?></th>
             <?php endforeach; ?>
             <th>Award To</th>
@@ -585,7 +635,7 @@ require __DIR__ . '/includes/header.php';
               <td style="padding:10px;"><?= e($item['description']) ?></td>
               <td style="padding:10px;"><?= e($item['unit'] ?: '—') ?></td>
               <td style="padding:10px; text-align:right;"><?= number_format($item['qty'], 0) ?></td>
-              <?php foreach ($quotations as $q): ?>
+              <?php foreach ($active_quotations as $q): ?>
                 <?php
                   $quote_for_supplier = null;
                   foreach ($quotes_for_item as $qf) {
@@ -609,6 +659,14 @@ require __DIR__ . '/includes/header.php';
               <td style="padding:10px;">
                 <?php if ($award): ?>
                   <span class="badge green">Awarded to <?= e($award['supplier_name']) ?></span>
+                  <?php if ($rfq['status'] !== 'awarded'): ?>
+                    <form method="post" style="display:inline; margin-left:6px;" onsubmit="return confirm('Undo award for this item?');">
+                      <?= csrf_field() ?>
+                      <input type="hidden" name="action" value="undo_award">
+                      <input type="hidden" name="rfq_item_id" value="<?= (int)$item['id'] ?>">
+                      <button type="submit" class="btn sm" style="background:#c62828; color:#fff; border:none; padding:4px 10px; border-radius:4px; cursor:pointer; font-size:12px;">Undo</button>
+                    </form>
+                  <?php endif; ?>
                 <?php elseif (!empty($quotes_for_item)): ?>
                   <form method="post" style="display:inline;">
                     <?= csrf_field() ?>
@@ -636,6 +694,18 @@ require __DIR__ . '/includes/header.php';
       </table>
     </div>
   </div>
+  <?php if ($awarded_count > 0 && $rfq['status'] !== 'awarded'): ?>
+    <div class="card">
+      <div class="card-body">
+        <form method="post" style="display:inline;" onsubmit="return confirm('Reset ALL awards for this RFQ? This will undo all item awards and allow fresh evaluation.');">
+          <?= csrf_field() ?>
+          <input type="hidden" name="action" value="reset_evaluation">
+          <button type="submit" class="btn" style="background:#c62828; color:#fff;">Reset All Awards</button>
+        </form>
+        <span style="color:#666; margin-left:10px;">Undo all awards and start evaluation over.</span>
+      </div>
+    </div>
+  <?php endif; ?>
   <?php if ($awarded_count === count($rfq_items) && count($rfq_items) > 0): ?>
     <div class="card">
       <div class="card-body">

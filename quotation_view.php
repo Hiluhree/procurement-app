@@ -27,16 +27,16 @@ if (!$quotation) {
     redirect('/rfqs.php');
 }
 
-// Get quotation items
-$items_stmt = $pdo->prepare('
-    SELECT qi.*, ri.description as rfq_description, ri.qty as rfq_qty, ri.unit as rfq_unit
-    FROM quotation_items qi
-    JOIN rfq_items ri ON qi.rfq_item_id = ri.id
-    WHERE qi.quotation_id = ?
-    ORDER BY qi.id
+// Get awarded items for this supplier/quotation
+$awarded_items_stmt = $pdo->prepare('
+    SELECT ra.*, ri.description as rfq_description, ri.qty as rfq_qty, ri.unit as rfq_unit
+    FROM rfq_awards ra
+    JOIN rfq_items ri ON ri.id = ra.rfq_item_id
+    WHERE ra.quotation_id = ?
+    ORDER BY ra.rfq_item_id ASC
 ');
-$items_stmt->execute([$quotation_id]);
-$quotation_items = $items_stmt->fetchAll();
+$awarded_items_stmt->execute([$quotation_id]);
+$awarded_items = $awarded_items_stmt->fetchAll();
 
 // Handle award/reject actions
 $errors = [];
@@ -122,54 +122,60 @@ require __DIR__ . '/includes/header.php';
 </div>
 
 <div class="card">
-  <div class="card-header"><span class="htitle">Quoted Items</span></div>
+  <div class="card-header"><span class="htitle">Awarded Items</span></div>
   <div class="card-body" style="padding:0; overflow-x:auto;">
-    <table class="comparison-table">
-      <thead>
-        <tr>
-          <th>Item</th>
-          <th>RFQ Qty</th>
-          <th>Offered Qty</th>
-          <th style="text-align:right;">Unit Price</th>
-          <th style="text-align:right;">Total</th>
-        </tr>
-      </thead>
-      <tbody>
-      <?php 
-        $total = 0;
-        foreach ($quotation_items as $item):
-          $item_total = $item['qty_offered'] * $item['unit_price'];
-          $total += $item_total;
-      ?>
-        <tr>
-          <td>
-            <strong><?= e($item['rfq_description']) ?></strong><br>
-            <span style="color:#999; font-size:11px;"><?= e($item['unit']) ?></span>
-          </td>
-          <td style="text-align:center;">
-            <?= number_format($item['rfq_qty'], 0) ?>
-          </td>
-          <td style="text-align:center;">
-            <?= number_format($item['qty_offered'], 0) ?>
-          </td>
-          <td style="text-align:right;" class="price-highlight">
-            <?= money($item['unit_price']) ?>
-          </td>
-          <td style="text-align:right;" class="price-highlight">
-            <?= money($item_total) ?>
-          </td>
-        </tr>
-      <?php endforeach; ?>
-      </tbody>
-      <tfoot>
-        <tr style="font-weight:bold; background:#f0f0f0; border-top:2px solid #ddd;">
-          <td colspan="4" style="padding:10px; text-align:right;">Total Quoted Amount:</td>
-          <td style="padding:10px; text-align:right; color:#C9AA35;">
-            <?= money($total) ?>
-          </td>
-        </tr>
-      </tfoot>
-    </table>
+    <?php if (empty($awarded_items)): ?>
+      <div class="card-body" style="color:#999; text-align:center; padding:40px;">
+        No items have been awarded from this quotation yet.
+      </div>
+    <?php else: ?>
+      <table class="comparison-table">
+        <thead>
+          <tr>
+            <th>Item</th>
+            <th>RFQ Qty</th>
+            <th style="text-align:right;">Awarded Qty</th>
+            <th style="text-align:right;">Unit Price</th>
+            <th style="text-align:right;">Line Total</th>
+          </tr>
+        </thead>
+        <tbody>
+        <?php 
+          $total = 0;
+          foreach ($awarded_items as $item):
+            $item_total = $item['qty_awarded'] * $item['unit_price'];
+            $total += $item_total;
+        ?>
+          <tr>
+            <td>
+              <strong><?= e($item['rfq_description']) ?></strong><br>
+              <span style="color:#999; font-size:11px;"><?= e($item['rfq_unit']) ?></span>
+            </td>
+            <td style="text-align:center;">
+              <?= number_format($item['rfq_qty'], 0) ?>
+            </td>
+            <td style="text-align:center;">
+              <?= number_format($item['qty_awarded'], 0) ?>
+            </td>
+            <td style="text-align:right;" class="price-highlight">
+              <?= money($item['unit_price']) ?>
+            </td>
+            <td style="text-align:right;" class="price-highlight">
+              <?= money($item_total) ?>
+            </td>
+          </tr>
+        <?php endforeach; ?>
+        </tbody>
+        <tfoot>
+          <tr style="font-weight:bold; background:#f0f0f0; border-top:2px solid #ddd;">
+            <td colspan="4" style="padding:10px; text-align:right;">Total Awarded Amount:</td>
+            <td style="padding:10px; text-align:right; color:#C9AA35;">
+              <?= money($total) ?>
+            </td>
+          </tr>
+        </tfoot>
+      </table>
+    <?php endif; ?>
   </div>
 </div>
 
